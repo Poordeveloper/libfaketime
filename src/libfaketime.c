@@ -42,6 +42,7 @@
 #include <limits.h>
 #include <sys/select.h>
 #include <sys/epoll.h>
+#include <sys/timerfd.h>
 
 #include "time_ops.h"
 #include "faketime_common.h"
@@ -155,6 +156,7 @@ static int          (*real_epoll_wait)      (int epfd, struct epoll_event *event
 static int          (*real_epoll_pwait)     (int epfd, struct epoll_event *events, int maxevents, int timeout, const sigset_t *sigmask);
 static int          (*real_ppoll)           (struct pollfd *, nfds_t, const struct timespec *, const sigset_t *);
 static int          (*real_sem_timedwait)   (sem_t*, const struct timespec*);
+static int          (*real_timerfd_settime) (int fd, int flags, const struct itimerspec *new_value, struct itimerspec *old_value);
 #endif
 #ifdef __APPLE__
 static int          (*real_clock_get_time)  (clock_serv_t clock_serv, mach_timespec_t *cur_timeclockid_t);
@@ -1123,6 +1125,57 @@ int epoll_pwait(int epfd, struct epoll_event *events,
   return ret;
 }
 
+/*
+ * Faked timerfd_settime()
+ */
+int timerfd_settime(int fd, int flags, const struct itimerspec *new_value, struct itimerspec *old_value)
+{
+  int ret;
+  struct itimerspec real_new_value, *real_new_value_pt;
+  
+  if (!initialized)
+  {
+    ftpl_init();
+  }
+  if (real_timerfd_settime == NULL)
+  {
+    return -1;
+  }
+ 
+  if (new_value != NULL) 
+  {
+    if (user_rate_set && !dont_fake)
+    {
+      if (flags & TIMER_ABSTIME)
+      {
+        struct timespec tdiff, timeadj;
+        timespecsub(&new_value->it_value, &user_faked_time_timespec, &timeadj);
+        timespecmul(&timeadj, 1.0/user_rate, &tdiff);
+        /* only CLOCK_REALTIME is handled */
+        timespecadd(&ftpl_starttime.real, &tdiff, &real_new_value.it_value);
+      }
+      else 
+      {
+        timespecmul(&new_value->it_value, 1.0 / user_rate, &real_new_value.it_value);
+      }
+      timespecmul(&new_value->it_interval, 1.0 / user_rate, &real_new_value.it_interval);
+      real_new_value_pt = &real_new_value;
+    }
+    else
+    {
+      /* cast away constness */
+      real_new_value_pt = (struct itimerspec *)new_value;
+    }
+  }
+  else
+  {
+    real_new_value_pt = (struct itimerspec *)new_value;
+  }
+
+  DONT_FAKE_TIME(ret = (*real_timerfd_settime)(fd, flags, real_new_value_pt, old_value));
+  return ret;
+}
+
 int sem_timedwait(sem_t *sem, const struct timespec *abs_timeout)
 {
   int result;
@@ -1723,6 +1776,7 @@ void ftpl_init(void)
   real_pselect =            dlsym(RTLD_NEXT, "pselect");
   real_epoll_wait =         dlsym(RTLD_NEXT, "epoll_wait");
   real_epoll_pwait =        dlsym(RTLD_NEXT, "epoll_pwait");
+  real_timerfd_settime =    dlsym(RTLD_NEXT, "timerfd_settime");
   real_sem_timedwait =      dlsym(RTLD_NEXT, "sem_timedwait");
 #endif
 #ifdef FAKE_INTERNAL_CALLS
