@@ -40,6 +40,8 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <limits.h>
+#include <sys/select.h>
+#include <sys/epoll.h>
 
 #include "time_ops.h"
 #include "faketime_common.h"
@@ -147,6 +149,10 @@ static int          (*real_usleep)          (useconds_t usec);
 static unsigned int (*real_sleep)           (unsigned int seconds);
 static unsigned int (*real_alarm)           (unsigned int seconds);
 static int          (*real_poll)            (struct pollfd *, nfds_t, int);
+static int          (*real_select)          (int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout);
+static int          (*real_pselect)         (int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, const struct timespec *timeout, const sigset_t *sigmask);
+static int          (*real_epoll_wait)      (int epfd, struct epoll_event *events, int maxevents, int timeout);
+static int          (*real_epoll_pwait)     (int epfd, struct epoll_event *events, int maxevents, int timeout, const sigset_t *sigmask);
 static int          (*real_ppoll)           (struct pollfd *, nfds_t, const struct timespec *, const sigset_t *);
 static int          (*real_sem_timedwait)   (sem_t*, const struct timespec*);
 #endif
@@ -956,7 +962,7 @@ int ppoll(struct pollfd *fds, nfds_t nfds,
   }
   if (timeout_ts != NULL)
   {
-    if (user_rate_set && !dont_fake && (timeout_ts->tv_sec > 0))
+    if (user_rate_set && !dont_fake)
     {
       timespecmul(timeout_ts, 1.0 / user_rate, &real_timeout);
       real_timeout_pt = &real_timeout;
@@ -993,6 +999,127 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout)
   }
 
   DONT_FAKE_TIME(ret = (*real_poll)(fds, nfds, timeout_real));
+  return ret;
+}
+
+/*
+ * Faked pselect()
+ */
+int pselect(int nfds, fd_set *readfds, fd_set *writefds,
+    fd_set *exceptfds, const struct timespec *timeout_ts,
+    const sigset_t *sigmask)
+{
+  struct timespec real_timeout, *real_timeout_pt;
+  int ret;
+
+  if (!initialized)
+  {
+    ftpl_init();
+  }
+  if (real_pselect == NULL)
+  {
+    return -1;
+  }
+  if (timeout_ts != NULL)
+  {
+    if (user_rate_set && !dont_fake)
+    {
+      timespecmul(timeout_ts, 1.0 / user_rate, &real_timeout);
+      real_timeout_pt = &real_timeout;
+    }
+    else
+    {
+      /* cast away constness */
+      real_timeout_pt = (struct timespec *)timeout_ts;
+    }
+  }
+  else
+  {
+    real_timeout_pt = NULL;
+  }
+
+  DONT_FAKE_TIME(ret = (*real_pselect)(nfds, readfds, writefds, exceptfds, real_timeout_pt, sigmask));
+  return ret;
+}
+
+/*
+ * Faked select()
+ */
+int select(int nfds, fd_set *readfds, fd_set *writefds,
+    fd_set *exceptfds, struct timeval *timeout_ts)
+{
+  struct timeval real_timeout, *real_timeout_pt;
+  int ret;
+
+  if (!initialized)
+  {
+    ftpl_init();
+  }
+  if (real_select == NULL)
+  {
+    return -1;
+  }
+  if (timeout_ts != NULL)
+  {
+    if (user_rate_set && !dont_fake)
+    {
+      timermul(timeout_ts, 1.0 / user_rate, &real_timeout);
+      real_timeout_pt = &real_timeout;
+    }
+    else
+    {
+      /* cast away constness */
+      real_timeout_pt = (struct timeval *)timeout_ts;
+    }
+  }
+  else
+  {
+    real_timeout_pt = NULL;
+  }
+
+  DONT_FAKE_TIME(ret = (*real_select)(nfds, readfds, writefds, exceptfds, real_timeout_pt));
+  return ret;
+}
+
+/*
+ * Faked epoll_wait()
+ */
+int epoll_wait(int epfd, struct epoll_event *events,
+    int maxevents, int timeout)
+{
+  int ret, timeout_real = (user_rate_set && !dont_fake && (timeout > 0))?(timeout / user_rate):timeout;
+
+  if (!initialized)
+  {
+    ftpl_init();
+  }
+  if (real_epoll_wait == NULL)
+  {
+    return -1;
+  }
+
+  DONT_FAKE_TIME(ret = (*real_epoll_wait)(epfd, events, maxevents, timeout_real));
+  return ret;
+}
+
+/*
+ * Faked epoll_pwait()
+ */
+int epoll_pwait(int epfd, struct epoll_event *events,
+    int maxevents, int timeout, const sigset_t *sigmask)
+{
+  int ret, timeout_real = (user_rate_set && !dont_fake && (timeout > 0))?(timeout / user_rate):timeout;
+
+  if (!initialized)
+  {
+    ftpl_init();
+  }
+  if (real_epoll_pwait == NULL)
+  {
+    return -1;
+  }
+
+  DONT_FAKE_TIME(ret = (*real_epoll_pwait)(epfd, events, maxevents, timeout_real, sigmask));
   return ret;
 }
 
@@ -1592,6 +1719,10 @@ void ftpl_init(void)
   real_alarm =              dlsym(RTLD_NEXT, "alarm");
   real_poll =               dlsym(RTLD_NEXT, "poll");
   real_ppoll =              dlsym(RTLD_NEXT, "ppoll");
+  real_select =             dlsym(RTLD_NEXT, "select");
+  real_pselect =            dlsym(RTLD_NEXT, "pselect");
+  real_epoll_wait =         dlsym(RTLD_NEXT, "epoll_wait");
+  real_epoll_pwait =        dlsym(RTLD_NEXT, "epoll_pwait");
   real_sem_timedwait =      dlsym(RTLD_NEXT, "sem_timedwait");
 #endif
 #ifdef FAKE_INTERNAL_CALLS
