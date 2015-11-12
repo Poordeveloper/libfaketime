@@ -1146,13 +1146,16 @@ int timerfd_settime(int fd, int flags, const struct itimerspec *new_value, struc
   {
     if (user_rate_set && !dont_fake)
     {
-      if (flags & TIMER_ABSTIME)
+      // somehow, boost asio set TFD_TIMER_ABSTIME even when use relative,
+      // so here we double check with new_value->it_value.tv_sec
+      if ((flags & TFD_TIMER_ABSTIME) && new_value->it_value.tv_sec > 0)
       {
         struct timespec tdiff, timeadj;
         timespecsub(&new_value->it_value, &user_faked_time_timespec, &timeadj);
         timespecmul(&timeadj, 1.0/user_rate, &tdiff);
         /* only CLOCK_REALTIME is handled */
         timespecadd(&ftpl_starttime.real, &tdiff, &real_new_value.it_value);
+        printf("%d %d\n", flags, TFD_TIMER_ABSTIME);
       }
       else 
       {
@@ -1160,6 +1163,8 @@ int timerfd_settime(int fd, int flags, const struct itimerspec *new_value, struc
       }
       timespecmul(&new_value->it_interval, 1.0 / user_rate, &real_new_value.it_interval);
       real_new_value_pt = &real_new_value;
+      if (real_new_value_pt->it_value.tv_sec == 0 && real_new_value_pt->it_value.tv_nsec == 0)
+        real_new_value_pt->it_value.tv_nsec = 1;
     }
     else
     {
